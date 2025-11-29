@@ -1,19 +1,27 @@
 from flask import Flask, request, jsonify
 import yt_dlp
-import os  # PENTING: Untuk mencari lokasi file cookies
+import os
+import shutil
 
 app = Flask(__name__)
 
-# Konfigurasi YDL dengan Cookies & User Agent
 def get_ydl_opts(extract_flat=False):
-    # Cari lokasi file cookies.txt di folder yang sama dengan script ini
-    # Ini wajib dilakukan agar Vercel bisa menemukan filenya
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-    cookie_path = os.path.join(dir_path, 'cookies.txt')
+    # 1. Tentukan lokasi folder source dan folder temp (yang boleh ditulis)
+    source_dir = os.path.dirname(os.path.realpath(__file__))
+    source_cookie = os.path.join(source_dir, 'cookies.txt')
     
-    # Cek apakah file cookies benar-benar ada (untuk debugging)
-    if not os.path.exists(cookie_path):
-        print(f"WARNING: File cookies tidak ditemukan di {cookie_path}")
+    # Lokasi writable di Vercel hanyalah /tmp
+    temp_cookie = '/tmp/cookies.txt'
+    temp_cache_dir = '/tmp/yt_dlp_cache'
+
+    # 2. Salin cookies.txt dari Source ke /tmp agar aman dibaca/tulis
+    if os.path.exists(source_cookie):
+        try:
+            shutil.copyfile(source_cookie, temp_cookie)
+        except Exception as e:
+            print(f"Gagal menyalin cookies: {e}")
+    else:
+        print("WARNING: File cookies.txt asli tidak ditemukan!")
 
     return {
         'quiet': True,
@@ -21,11 +29,18 @@ def get_ydl_opts(extract_flat=False):
         'extract_flat': extract_flat,
         'geo_bypass': True,
         
-        # --- SOLUSI ANTI BLOKIR ---
-        # 1. Gunakan Cookies dari browser asli
-        'cookiefile': cookie_path,
+        # --- KONFIGURASI PENTING UNTUK VERCEL ---
+        # Gunakan file cookies yang ada di folder /tmp
+        'cookiefile': temp_cookie,
         
-        # 2. Menyamar jadi Browser Chrome di Windows
+        # Simpan cache di /tmp (JANGAN di folder project)
+        'cache_dir': temp_cache_dir,
+        
+        # Opsi tambahan agar tidak error saat mencoba menulis file sementara
+        'nopart': True, 
+        'writethumbnail': False,
+        
+        # User Agent Samaran
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
 
@@ -42,10 +57,8 @@ def get_info():
         opts = get_ydl_opts(extract_flat=flat_mode)
 
         with yt_dlp.YoutubeDL(opts) as ydl:
-            # Ambil Info
             info = ydl.extract_info(url, download=False)
             
-            # FORMAT DATA CHANNEL
             if type_req == 'channel':
                 return jsonify({
                     'type': 'channel',
@@ -57,8 +70,6 @@ def get_info():
                     'thumbnail': info.get('thumbnails', [{}])[0].get('url'),
                     'banner': info.get('banner_url', '')
                 })
-            
-            # FORMAT DATA VIDEO
             else:
                 return jsonify({
                     'type': 'video',
@@ -77,8 +88,8 @@ def get_info():
                 })
 
     except Exception as e:
-        # Tampilkan error yang jelas jika gagal
-        print(f"Error Log: {str(e)}")
+        # Print error ke log Vercel untuk debugging
+        print(f"Server Error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
